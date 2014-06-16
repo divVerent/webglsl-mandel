@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>GLSL Iterator</title>
+
+<script id="vshader" type="x-shader/x-vertex">
+precision highp float;
+
+uniform mat4 u_modelViewProjMatrix;
+uniform int u_fliphack;
+uniform vec4 u_dragofs;
+
+attribute vec4 a_position;
+
+varying vec2 v_texCoord;
+
+// main is almost the most trivial vertex shader ever.
+void main() {
+  v_texCoord = vec2(a_position) * u_dragofs.zw + u_dragofs.xy;
+  if (u_fliphack != 0) {
+    v_texCoord.y = 1.0 - v_texCoord.y;
+  }
+  gl_Position = u_modelViewProjMatrix * a_position;
+}
+</script>
+
+<script id="fshader" type="x-shader/x-fragment">
+//#define N num_iterations
+//#define USEFBO
+
+precision highp float;
+
+uniform sampler2D u_sampler;
+uniform float u_t;
+uniform int u_mode;
+uniform vec2 u_param;
+uniform int u_dither;
+uniform int u_blit2screen;
+uniform int u_palette;
+uniform float u_maxlight;
+uniform float u_reflength;
+
+// View rectangle.
+uniform vec4 u_xymin_xysize;
+
+varying vec2 v_texCoord;
+
+#define M_PI 3.1415926535897932384626433832795
+
+// Some simple random noise generator.
+float rand(vec2 tc) {
+  return fract(sin(dot(tc.xy, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+// Simple dithering. No temporal noise, spatial noise only.
+vec4 dither(vec4 c, vec2 tc) {
+  vec4 p = vec4(
+      rand(tc) - 0.5,
+      rand(tc + vec2(1.0, 0.0)) - 0.5,
+      rand(tc + vec2(0.0, 1.0)) - 0.5,
+      0.0
+      );
+  return clamp(c + p / 255.0, 0.0, 1.0);
+}
+
+// coord2color encodes a coordinate as a color value. Length is encoded as
+// brightness, the angle is encoded as hue.
+vec4 coord2color(vec2 p) {
+  float len = length(p) / u_reflength;
+
+  float lightness = (1.0 - 1.0 / (len + 1.0)) * u_maxlight;
+  if (u_palette == 1) {
+    lightness = 1.0 - lightness;
+  }
+  float hue = atan(p.y, p.x);
+
+  // Not real HSL, but close enough.
+  float red = cos(hue);
+  float green = cos(hue + M_PI * 4.0 / 3.0);
+  float blue = cos(hue + M_PI * 2.0 / 3.0);
+  float scale = min(lightness, 1.0 - lightness);
+  vec4 ret = vec4(
+      lightness + red * scale,
+      lightness + green * scale,
+      lightness + blue * scale,
+      1.0);
+
+  if (u_dither != 0) {
+    return dither(ret, v_texCoord);
+  } else {
+    return ret;
+  }
+}
+
+// color2coord is the inverse map of coord2color.
+vec2 color2coord(vec4 c) {
+  float lightness = dot(c.rgb, vec3(1.0 / 3.0));
+  if (u_palette == 1) {
+    lightness = 1.0 - lightness;
+  }
+  float scale = min(lightness, 1.0 - lightness);
+  float len;
+  if (lightness >= u_maxlight) {
+    len = 65536.0;
+  } else {
+    len = 1.0 / (1.0 - lightness / u_maxlight) - 1.0;
+  }
+
+  if (scale == 0.0) {
+    return vec2(len, 0.0);
+  }
+
+  float red = c.r - lightness;
+  float green = c.g - lightness;
+  float blue = c.b - lightness;
+
+  if (blue == green && red == 0.0) {
+    return vec2(len, 0.0);
+  }
+
+  float hue = atan((green - blue) / sqrt(3.0), red);
+
+  // No idea why hue is sometimes NaN despite this not being atan(0, 0)...
+  if (hue != hue) {
+    return vec2(len, 0.0);
+  }
+
+  return len * u_reflength * vec2(cos(hue), sin(hue));
+}
+
+// tc2coord converts a texcoord to a coordinate. Simply applies the view
+// rectangle.
+vec2 tc2coord(vec2 p) {
+  return p * u_xymin_xysize.zw + u_xymin_xysize.xy;
+}
+
+// coord2tc is the inverse map of tc2coord.
+vec2 coord2tc(vec2 p) {
+  return (p - u_xymin_xysize.xy) / u_xymin_xysize.zw;
+  // return mod((p - u_xymin_xysize.xy) / u_xymin_xysize.zw, vec2(1.0, 1.0));
+}
+
+// cmul multiplies two complex values.
+vec2 cmul(vec2 a, vec2 b) {
+  return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+// cabs2 returns |a|^2
+float cabs2(vec2 a) {
+  return dot(a, a);
+}
+
+// cabs returns |a|
+float cabs(vec2 a) {
+  return sqrt(dot(a, a));
+}
+
+// x*conj returns x~
+const vec2 conj = vec2(1.0, -1.0);
+
+// cdiv divides two complex values.
+vec2 cdiv(vec2 a, vec2 b) {
+  return cmul(a, b*conj) / cabs2(b);
+}
+
+// cexp does what you think it does.
+vec2 cexp(vec2 a) {
+  return exp(a.x) * vec2(cos(a.y), sin(a.y));
+}
+
+// clog does what you think it does.
+vec2 clog(vec2 a) {
+  return vec2(
+    log(cabs2(a)) * 0.5,
+    atan(a.y, a.x)
+  );
+}
+
+// cpow does what you think it does.
+vec2 cpow(vec2 a, vec2 b) {
+  return cexp(cmul(clog(a), b));
+}
+
+// csin does what you think it does.
+vec2 csin(vec2 a) {
+  return vec2(0.5, -0.5) * (cexp(vec2(-a.y, a.x)) - cexp(vec2(a.y, -a.x))).yx;
+}
+
+// ccos does what you think it does.
+vec2 ccos(vec2 a) {
+  return vec2(0.5, 0.5) * (cexp(vec2(-a.y, a.x)) + cexp(vec2(a.y, -a.x)));
+}
+
+// ctan does what you think it does.
+vec2 ctan(vec2 a) {
+  return cdiv(csin(a), ccos(a));
+}
+
+// ccot does what you think it does.
+vec2 ccot(vec2 a) {
+  return cdiv(ccos(a), csin(a));
+}
+
+// whirl applies the fractal iteration formula.
+vec2 whirl(vec2 z, vec2 c) {
+  if (length(z) > BAILOUT) {
+    return z;
+  }
+  // return cmul(z, z) + c;
+  return FORMULA;
+}
+
+vec2 whirln(vec2 z, vec2 c) {
+  for (int i = 0; i < N; ++i)
+    z = whirl(z, c);
+  return z;
+}
+
+// sample samples a pixel.
+vec4 sample(vec2 tc) {
+  if (tc.x < 0.0 || tc.y < 0.0 || tc.x > 1.0 || tc.y > 1.0) {
+    return vec4(99.0, 99.0, 99.0, 1.0);
+  }
+  return texture2D(u_sampler, tc);
+}
+
+// sample2coord samples a pixel and converts it to a coordinate.
+vec2 sample2coord(vec2 tc) {
+#ifdef USEFBO
+  return sample(tc).xy;
+#else
+  return color2coord(sample(tc));
+#endif
+}
+
+// sample2color samples a pixel and converts it to a color.
+vec4 sample2color(vec2 tc) {
+#ifdef USEFBO
+  return coord2color(sample(tc).xy);
+#else
+  return sample(tc);
+#endif
+}
+
+// main applies an iteration of the fractal.
+void main() {
+  if (u_blit2screen != 0) {
+    gl_FragColor = sample2color(v_texCoord);
+  } else {
+    vec2 zzc;
+    vec2 p = tc2coord(v_texCoord);
+    if (u_mode <= 0) {
+      // Mandelbrot.
+      vec2 z;
+      if (u_t == 0.0) {
+        z = u_param;
+      } else {
+        z = sample2coord(v_texCoord);
+      }
+      zzc = whirln(z, p);
+    } else if (u_mode <= 1) {
+      // Julia. Iterate on each pixel.
+      vec2 z;
+      if (u_t == 0.0) {
+        z = tc2coord(v_texCoord);
+      } else {
+        z = sample2coord(v_texCoord);
+      }
+      zzc = whirln(z, u_param);
+    } else {  // if (u_mode <= 2)
+      // Julia. Iterate by deforming.
+      if (u_t == 0.0) {
+        zzc = whirln(p, u_param);
+      } else {
+        // zzc = sample2coord(coord2tc(whirln(p, u_param)));
+        // HACK: do not dither again!
+        gl_FragColor = sample(coord2tc(whirln(p, u_param)));
+        return;
+      }
+    }
+#ifdef USEFBO
+    gl_FragColor = vec4(zzc, 0.0, 0.0);
+#else
+    gl_FragColor = coord2color(zzc);
+#endif
+  }
+}
+</script>
+
+<script>
+function Scene(canvas) {
+  this.canvas = document.getElementById(canvas);
+  this.drag_dx = 0;
+  this.drag_dy = 0;
+  this.dragging = 0;  // 1 == mouse, 2 == touch
+  this.scrollTime = 0;
+
+  this.initGL();
+  this.loadFromLocation();
+  this.handleFormFields();
+  this.reinit();
+
+  this.drawScene();
+
+  var me = this;
+  this.canvas.onmousedown = function(ev) { me.canvasMouseDown(ev); return false; };
+  this.canvas.onmouseup = function(ev) { me.canvasMouseUp(ev); return false; };
+  this.canvas.onmousemove = function(ev) { me.canvasMouseMove(ev); return false; };
+  this.canvas.onwheel = function(ev) { me.canvasMouseWheel(ev); return false; };
+  this.canvas.ontouchstart = function(ev) { me.canvasTouchStart(ev); return false; };
+  this.canvas.ontouchmove = function(ev) { me.canvasTouchMove(ev); return false; };
+  this.canvas.ontouchend = function(ev) { me.canvasTouchEnd(ev); return false; };
+}
+
+Scene.prototype.setCoords = function() {
+  var canvasAspect = this.canvas.clientWidth / this.canvas.clientHeight;
+  if (canvasAspect < 1.0) {
+    var realYR = this.size / canvasAspect;
+    this.xmin = this.centerx - this.size;
+    this.ymin = this.centery - realYR;
+    this.xmax = this.centerx + this.size;
+    this.ymax = this.centery + realYR;
+  } else {
+    var realXR = this.size * canvasAspect;
+    this.xmin = this.centerx - realXR;
+    this.ymin = this.centery - this.size;
+    this.xmax = this.centerx + realXR;
+    this.ymax = this.centery + this.size;
+  }
+}
+
+Scene.prototype.reinit = function() {
+  this.error = null;
+  this.initShaders();
+  if (this.error) {
+    alert(this.error);
+    return;
+  }
+  this.initBuffers();
+  this.resetScene();
+  if (this.usefbo != 0) {
+    for (var i = 0; i < 2; ++i) {
+      this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.fbo[i]);
+      if (this.gl.checkFramebufferStatus(this.gl.FRAMEBUFFER) != this.gl.FRAMEBUFFER_COMPLETE) {
+        // console.info(this.gl.checkFramebufferStatus(this.gl.FRAMEBUFFER));
+        this.usefbo = 0;
+        this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+        this.fixValues();  // Will force a reinit.
+        return;
+      }
+    }
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+  }
+}
+
+Scene.prototype.scale = function(x0, y0, x1, y1, factor) {
+  var px = this.xmin + (this.xmax - this.xmin) * (x0 / this.canvas.clientWidth);
+  var py = this.ymax + (this.ymin - this.ymax) * (y0 / this.canvas.clientHeight);
+  this.size *= factor;
+  this.setCoords();
+  var npx = this.xmin + (this.xmax - this.xmin) * (x1 / this.canvas.clientWidth);
+  var npy = this.ymax + (this.ymin - this.ymax) * (y1 / this.canvas.clientHeight);
+  this.centerx -= npx - px;
+  this.centery -= npy - py;
+  this.fixValues();
+}
+
+Scene.prototype.getX = function(ev) {
+  return ev.clientX - this.canvas.getBoundingClientRect().left;
+}
+
+Scene.prototype.getY = function(ev) {
+  return ev.clientY - this.canvas.getBoundingClientRect().top;
+}
+
+Scene.prototype.dragStart = function(mode) {
+  this.dragging = mode;
+  this.drag_starttime = new Date().getTime();
+  this.drag_centerx = this.centerx;
+  this.drag_centery = this.centery;
+  this.drag_size = this.size;
+}
+
+Scene.prototype.dragCommit = function(x, y) {
+  this.dragging = 0;
+  var dcx = Math.abs((this.drag_centerx - this.centerx) / this.size);
+  var dcy = Math.abs((this.drag_centery - this.centery) / this.size);
+  var ds = Math.abs(this.drag_size / this.size - 1);
+  if (dcx >= 0.01 || dcy >= 0.01 || ds >= 0.01) {
+    this.centerx = this.drag_centerx;
+    this.centery = this.drag_centery;
+    this.size = this.drag_size;
+    this.fixValues();
+  } else {
+    var drag_endtime = new Date().getTime();
+    var dt = drag_endtime - this.drag_starttime;
+    if (dt >= 10 && dt <= 200) {
+      this.toggleJulia(x, y);
+    }
+  }
+}
+
+Scene.prototype.touchReset = function(fingerx, fingery, dist) {
+  this.drag_touch_dist = dist;
+  this.drag_touch_fingerx = fingerx;
+  this.drag_touch_fingery = fingery;
+}
+
+Scene.prototype.touchUpdate = function(fingerx, fingery, dist) {
+  var dcx = fingerx - this.drag_touch_fingerx;
+  var dcy = fingery - this.drag_touch_fingery;
+  var sd = (dist == 0 || this.drag_touch_dist == 0) ? 1 : dist / this.drag_touch_dist;
+
+  var oldW = (this.xmax - this.xmin) * (this.drag_size / this.size);
+  var oldH = (this.ymax - this.ymin) * (this.drag_size / this.size);
+  var oldMapX = this.drag_centerx + oldW * (this.drag_touch_fingerx / this.canvas.clientWidth - 0.5);
+  var oldMapY = this.drag_centery - oldH * (this.drag_touch_fingery / this.canvas.clientHeight - 0.5);
+
+  var newW = oldW / sd;
+  var newH = oldH / sd;
+  this.drag_centerx = oldMapX - newW * (fingerx / this.canvas.clientWidth - 0.5);
+  this.drag_centery = oldMapY + newH * (fingery / this.canvas.clientHeight - 0.5);
+  this.drag_size /= sd;
+
+  this.touchReset(fingerx, fingery, dist);
+}
+
+Scene.prototype.touchEvent = function(ev, reset) {
+  var fingerx = 0;
+  var fingery = 0;
+  for (var i = 0; i < ev.touches.length; ++i) {
+    fingerx += this.getX(ev.touches[i]);
+    fingery += this.getY(ev.touches[i]);
+  }
+  fingerx /= ev.touches.length;
+  fingery /= ev.touches.length;
+  var dist = 0;
+  for (var i = 0; i < ev.touches.length; ++i) {
+    var x = this.getX(ev.touches[i]);
+    var y = this.getY(ev.touches[i]);
+    dist += (x - fingerx) * (x - fingerx) + (y - fingery) * (y - fingery);
+  }
+  dist = Math.sqrt(dist / ev.touches.length);
+  if (reset)
+    this.touchReset(fingerx, fingery, dist);
+  else
+    this.touchUpdate(fingerx, fingery, dist);
+}
+
+Scene.prototype.canvasTouchStart = function(ev) {
+  if (this.dragging == 1)
+    return;
+
+  if (this.dragging != 2)
+    this.dragStart(2);
+
+  this.touchEvent(ev, true);
+}
+
+Scene.prototype.canvasTouchMove = function(ev) {
+  if (this.dragging != 2)
+    return;
+
+  this.touchEvent(ev, false);
+}
+
+Scene.prototype.canvasTouchEnd = function(ev) {
+  if (this.dragging != 2)
+    return;
+
+  if (ev.touches.length == 0) {
+    // Ending drag/zoom entirely.
+    this.dragCommit(this.drag_touch_fingerx, this.drag_touch_fingery);
+  } else {
+    this.touchEvent(ev, true);
+  }
+}
+
+// Implement mouse as touch emulation.
+Scene.prototype.canvasMouseDown = function(ev) {
+  if (this.dragging == 2)
+    return;
+
+  if (this.dragging != 1)
+    this.dragStart(1);
+
+  this.touchReset(this.getX(ev), this.getY(ev), 0);
+}
+
+Scene.prototype.canvasMouseMove = function(ev) {
+  if (this.dragging != 1)
+    return;
+
+  this.touchUpdate(this.getX(ev), this.getY(ev), 0);
+}
+
+Scene.prototype.canvasMouseUp = function(ev) {
+  if (this.dragging != 1)
+    return;
+
+  this.dragCommit(this.drag_touch_fingerx, this.drag_touch_fingery);
+}
+
+// wheel == factor 2 zoom
+Scene.prototype.canvasMouseWheel = function(ev) {
+  var x = this.getX(ev);
+  var y = this.getY(ev);
+  var t = new Date().getTime();
+  if (t < this.scrollTime + 100)
+    return;
+  this.scrollTime = t;
+  if (ev.deltaY < 0) {
+    this.scale(x, y, x, y, 0.5);
+  } else if (ev.deltaY > 0) {
+    this.scale(x, y, x, y, 2.0);
+  }
+}
+
+Scene.prototype.toggleJulia = function(x, y) {
+  x = this.xmin + (this.xmax - this.xmin) * (x / this.canvas.clientWidth);
+  y = this.ymax + (this.ymin - this.ymax) * (y / this.canvas.clientHeight);
+
+  if (this.mode == 0) {
+    this.save_x = this.paramx;
+    this.save_y = this.paramy;
+    this.paramx = x;
+    this.paramy = y;
+    if (this.save_i != 0) {
+      this.mode = this.save_i;
+    } else {
+      this.mode = (this.usefbo != 0) ? 1 : 2;
+    }
+  } else {
+    x = this.save_x;
+    y = this.save_y;
+    this.save_x = this.paramx;
+    this.save_y = this.paramy;
+    this.save_i = this.mode;
+    this.paramx = x;
+    this.paramy = y;
+    this.mode = 0;
+  }
+
+  this.fixValues();
+}
+
+Scene.prototype.initGL = function() {
+  try {
+    this.gl = this.canvas.getContext("experimental-webgl", {alpha: false});
+    this.OES_texture_float = this.gl.getExtension("OES_texture_float");
+    this.OES_float_linear = this.gl.getExtension("OES_float_linear");
+    this.WEBGL_color_buffer_float = this.gl.getExtension("WEBGL_color_buffer_float");
+    this.WEBGL_color_buffer_float = 1;  // Stupid Chrome.
+  } catch(e) {
+  }
+  if (!this.gl) {
+    alert("Could not initialise WebGL, sorry.");
+  }
+}
+
+Scene.prototype.getShader = function(id, n) {
+  var shaderScript = document.getElementById(id);
+  if (!shaderScript) {
+    return null;
+  }
+
+  var str = "";
+
+  str += "#define N " + this.n + "\n";
+  if (this.usefbo != 0) {
+    str += "#define USEFBO\n";
+  }
+  str += "#define BAILOUT " + new Number(this.bailout).toExponential() + "\n";
+  str += "#define FORMULA " + this.formula + "\n";
+
+  var k = shaderScript.firstChild;
+  while (k) {
+    if (k.nodeType == 3)
+      str += k.textContent;
+    k = k.nextSibling;
+  }
+
+  var shader;
+  if (shaderScript.type == "x-shader/x-fragment") {
+    shader = this.gl.createShader(this.gl.FRAGMENT_SHADER);
+  } else if (shaderScript.type == "x-shader/x-vertex") {
+    shader = this.gl.createShader(this.gl.VERTEX_SHADER);
+  } else {
+    return null;
+  }
+
+  this.gl.shaderSource(shader, str);
+  this.gl.compileShader(shader);
+
+  if (!this.gl.getShaderParameter(shader, this.gl.COMPILE_STATUS)) {
+    this.error = this.gl.getShaderInfoLog(shader);
+    return null;
+  }
+
+  return shader;
+}
+
+Scene.prototype.getAttribute = function(identifier) {
+  this[identifier] = this.gl.getAttribLocation(this.program, identifier);
+}
+
+Scene.prototype.getUniform = function(identifier) {
+  this[identifier] = this.gl.getUniformLocation(this.program, identifier);
+}
+
+Scene.prototype.initShaders = function() {
+  var fragmentShader = this.getShader("fshader");
+  var vertexShader = this.getShader("vshader");
+
+  if (!fragmentShader || !vertexShader)
+    return;
+
+  this.program = this.gl.createProgram();
+  this.gl.attachShader(this.program, vertexShader);
+  this.gl.attachShader(this.program, fragmentShader);
+  this.gl.linkProgram(this.program);
+
+  if (!this.gl.getProgramParameter(this.program, this.gl.LINK_STATUS)) {
+    this.error = this.gl.getProgramInfoLog(this.program);
+    return;
+  }
+
+  this.getAttribute("a_position");
+  this.gl.enableVertexAttribArray(this.a_position);
+
+  this.getUniform("u_modelViewProjMatrix");
+  this.getUniform("u_sampler");
+  this.getUniform("u_t");
+  this.getUniform("u_param");
+  this.getUniform("u_mode");
+  this.getUniform("u_dither");
+  this.getUniform("u_palette");
+  this.getUniform("u_maxlight");
+  this.getUniform("u_reflength");
+  this.getUniform("u_blit2screen");
+  this.getUniform("u_xymin_xysize");
+  this.getUniform("u_fliphack");
+  this.getUniform("u_dragofs");
+
+  this.gl.useProgram(this.program);
+}
+
+Scene.prototype.initBuffers = function() {
+
+  if (this.upsample < 0) {
+    // Negative means forcing pot.
+    this.canvas.width = Math.pow(2, Math.ceil(Math.log(this.canvas.clientWidth * -this.upsample) / Math.log(2)));
+    this.canvas.height = Math.pow(2, Math.ceil(Math.log(this.canvas.clientHeight * -this.upsample) / Math.log(2)));
+  } else {
+    // Normal.
+    this.canvas.width = this.canvas.clientWidth * this.upsample;
+    this.canvas.height = this.canvas.clientHeight * this.upsample;
+  }
+
+  this.vertices = this.gl.createBuffer();
+  this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.vertices);
+  var vertices = [
+    0, 0, 0,
+    0, 1, 0,
+    1, 0, 0,
+    1, 1, 0,
+    ];
+  this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(vertices), this.gl.STATIC_DRAW);
+  this.vertices.size = 3;
+  this.vertices.length = 4;
+
+  if (this.usefbo != 0) {
+    this.fbo = [null, null];
+    this.texture = [null, null];
+
+    for (var i = 0; i < 2; ++i) {
+      this.texture[i] = this.gl.createTexture();
+      this.gl.activeTexture(this.gl.TEXTURE0);
+      this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture[i]);
+      this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.canvas.width, this.canvas.height, 0, this.gl.RGBA, this.gl.FLOAT, null);
+      this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.nearest ? this.gl.NEAREST : this.gl.LINEAR);
+      this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.nearest ? this.gl.NEAREST : this.gl.LINEAR);
+      this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
+      this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
+      this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+      this.fbo[i] = this.gl.createFramebuffer();
+      this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.fbo[i]);
+      this.gl.framebufferTexture2D(this.gl.FRAMEBUFFER, this.gl.COLOR_ATTACHMENT0, this.gl.TEXTURE_2D, this.texture[i], 0);
+      this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+    }
+    this.fbo_index = 0;
+  } else {
+    this.texture = this.gl.createTexture();
+    this.gl.activeTexture(this.gl.TEXTURE0);
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.canvas.width, this.canvas.height, 0, this.gl.RGBA, this.gl.UNSIGNED_BYTE, null);
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MAG_FILTER, this.nearest ? this.gl.NEAREST : this.gl.LINEAR);
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.nearest ? this.gl.NEAREST : this.gl.LINEAR);
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.CLAMP_TO_EDGE);
+    this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
+    this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+  }
+}
+
+Scene.prototype.loadFromLocation = function() {
+  try {
+    var parse = function(s) {
+      var f = parseFloat(s);
+      if (isNaN(f)) {
+        return null;
+      }
+      return f;
+    };
+    var state = JSON.parse(location.hash.substr(1));
+    this.mode = parse(state[0]);
+    this.paramx = parse(state[1]);
+    this.paramy = parse(state[2]);
+    this.dt = parse(state[3]);
+    this.dither = parse(state[4]);
+    this.nearest = parse(state[5]);
+    this.upsample = parse(state[6]);
+    this.save_x = parse(state[7]);
+    this.save_y = parse(state[8]);
+    this.save_i = parse(state[9]);
+    this.n = parse(state[10]);
+    this.usefbo = parse(state[11]);
+    this.centerx = parse(state[12]);
+    this.centery = parse(state[13]);
+    this.size = parse(state[14]);
+    this.formula = state[15];
+    this.bailout = parse(state[16]);
+    this.palette = parse(state[17]);
+    this.maxlight = parse(state[18]);
+    this.reflength = parse(state[19]);
+  } catch(e) {
+  }
+  this.fixValues();
+}
+
+Scene.prototype.saveToLocation = function() {
+  var state = [
+    this.mode,
+    this.paramx,
+    this.paramy,
+    this.dt,
+    this.dither,
+    this.nearest,
+    this.upsample,
+    this.save_x,
+    this.save_y,
+    this.save_i,
+    this.n,
+    this.usefbo,
+    this.centerx,
+    this.centery,
+    this.size,
+    this.formula,
+    this.bailout,
+    this.palette,
+    this.maxlight,
+    this.reflength,
+    ];
+  var s = JSON.stringify(state);
+  if (location.hash.substr(1) != s) {
+    history.pushState('', '', '#' + JSON.stringify(state));
+  }
+}
+
+Scene.prototype.fixValues = function() {
+  if (this.mode == null) { this.mode = 0; }
+  if (this.paramx == null) { this.paramx = 0.0; }
+  if (this.paramy == null) { this.paramy = 0.0; }
+  if (!(this.dt > 0)) { this.dt = 1.0/60.0; }
+  if (this.dither == null) { this.dither = 1; }
+  if (this.nearest == null) { this.nearest = 0; }
+  if (!(this.upsample > 0 || this.upsample < 0)) { this.upsample = 1; }
+  if (this.save_x == null) { this.save_x = 0.0; }
+  if (this.save_y == null) { this.save_y = 0.0; }
+  if (this.save_i == null) { this.save_i = 0; }
+  if (!(this.n > 0)) { this.n = 1; }
+  if (this.usefbo == null) { this.usefbo = 1; }
+  if (this.centerx == null) { this.centerx = -0.5; }
+  if (this.centery == null) { this.centery = 0.0; }
+  if (this.size == null) { this.size = 2.0; }
+  if (this.formula == null || this.formula == "") { this.formula = "cmul(z, z) + c"; }
+  if (this.bailout == null) { this.bailout = 2.0; }
+  if (this.palette == null) { this.palette = 0; }
+  if (!(this.maxlight > 0 && this.maxlight < 1)) { this.maxlight = 1; }
+  if (!(this.reflength > 0)) { this.reflength = 0.25; }
+
+  if (this.usefbo != 0 && !(this.OES_texture_float && this.WEBGL_color_buffer_float)) {
+    this.usefbo = 0;
+  }
+  if (this.usefbo != 0 && !this.nearest && !this.OES_float_linear) {
+    this.nearest = 1;
+  }
+
+  var need_reset = false;
+  var need_reinit = false;
+  if (this.saveFormField("mode")) { need_reset = true; }
+  if (this.saveFormField("paramx")) { need_reset = true; }
+  if (this.saveFormField("paramy")) { need_reset = true; }
+  if (this.saveFormField("dt")) { }
+  if (this.saveFormField("dither")) { need_reset = true; }
+  if (this.saveFormField("nearest")) { need_reinit = true; }
+  if (this.saveFormField("upsample")) { need_reinit = true; }
+  if (this.saveFormField("n")) { need_reinit = true; }
+  if (this.saveFormField("usefbo")) { need_reinit = true; }
+  if (this.saveFormField("centerx")) { need_reset = true; }
+  if (this.saveFormField("centery")) { need_reset = true; }
+  if (this.saveFormField("size")) { need_reset = true; }
+  if (this.saveFormField("formula")) { need_reinit = true; }
+  if (this.saveFormField("bailout")) { need_reinit = true; }
+  if (this.saveFormField("palette")) { need_reset = true; }
+  if (this.saveFormField("maxlight")) { need_reset = true; }
+  if (this.saveFormField("reflength")) { need_reset = true; }
+  if (!this.dragging) {
+    this.saveToLocation();
+  }
+  if (need_reset) {
+    this.resetScene();
+  } else if (need_reinit) {
+    this.reinit();
+  }
+}
+
+Scene.prototype.saveFormField = function(field) {
+  var fld = document.getElementById(field);
+  var newValue = this[field];
+  var prevValue = this["prev_" + field];
+  if ("selectedIndex" in fld) { fld.selectedIndex = newValue; }
+  if ("checked" in fld && fld.type == "checkbox") { fld.checked = (newValue != 0); }
+  if ("value" in fld) { fld.value = newValue; }
+  this["prev_" + field] = newValue;
+  return (prevValue != null && newValue != prevValue);
+}
+
+Scene.prototype.loadFormField = function(field) {
+  var fld = document.getElementById(field);
+  if (field == "formula") { return fld.value; }
+  if ("selectedIndex" in fld) { return fld.selectedIndex; }
+  if ("checked" in fld && fld.type == "checkbox") { return fld.checked ? 1 : 0; }
+  if ("value" in fld) {
+    var f = parseFloat(fld.value);
+    if (isNaN(f)) {
+      return null;
+    }
+    return f;
+  }
+  return null;
+}
+
+Scene.prototype.loadFromForm = function() {
+  this.mode = this.loadFormField("mode");
+  this.paramx = this.loadFormField("paramx");
+  this.paramy = this.loadFormField("paramy");
+  this.dt = this.loadFormField("dt");
+  this.dither = this.loadFormField("dither");
+  this.nearest = this.loadFormField("nearest");
+  this.upsample = this.loadFormField("upsample");
+  this.n = this.loadFormField("n");
+  this.usefbo = this.loadFormField("usefbo");
+  this.centerx = this.loadFormField("centerx");
+  this.centery = this.loadFormField("centery");
+  this.size = this.loadFormField("size");
+  this.formula = this.loadFormField("formula");
+  this.bailout = this.loadFormField("bailout");
+  this.palette = this.loadFormField("palette");
+  this.maxlight = this.loadFormField("maxlight");
+  this.reflength = this.loadFormField("reflength");
+  this.fixValues();
+}
+
+Scene.prototype.handleFormFields = function() {
+  var me = this;
+  document.getElementById("paramx").onchange = function() { me.loadFromForm(); };
+  document.getElementById("paramy").onchange = function() { me.loadFromForm(); };
+  document.getElementById("mode").onchange = function() { me.loadFromForm(); };
+  document.getElementById("dt").onchange = function() { me.loadFromForm(); };
+  document.getElementById("dither").onchange = function() { me.loadFromForm(); };
+  document.getElementById("nearest").onchange = function() { me.loadFromForm(); };
+  document.getElementById("upsample").onchange = function() { me.loadFromForm(); };
+  document.getElementById("n").onchange = function() { me.loadFromForm(); };
+  document.getElementById("usefbo").onchange = function() { me.loadFromForm(); };
+  document.getElementById("centerx").onchange = function() { me.loadFromForm(); };
+  document.getElementById("centery").onchange = function() { me.loadFromForm(); };
+  document.getElementById("size").onchange = function() { me.loadFromForm(); };
+  document.getElementById("formula").onchange = function() { me.loadFromForm(); };
+  document.getElementById("bailout").onchange = function() { me.loadFromForm(); };
+  document.getElementById("palette").onchange = function() { me.loadFromForm(); };
+  document.getElementById("maxlight").onchange = function() { me.loadFromForm(); };
+  document.getElementById("reflength").onchange = function() { me.loadFromForm(); };
+  window.onpopstate = function() { me.loadFromLocation(); };
+}
+
+Scene.prototype.resetScene = function() {
+  this.setCoords();
+  this.t = 0.0;
+}
+
+Scene.prototype.loadTexture = function(url) {
+  var img = new Image();
+  var me = this;
+  img.onload = function() { me.loadedTexture(img); };
+  img.src = url;
+}
+
+Scene.prototype.loadedTexture = function(img) {
+  this.gl.activeTexture(this.gl.TEXTURE0);
+  this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+  this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, img);
+  this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+  this.fliphack = 1;
+}
+
+Scene.prototype.drawIteration = function() {
+  this.gl.uniform1i(this.u_blit2screen, 0);
+  this.gl.uniform4f(this.u_dragofs, 0, 0, 1, 1);
+  if (this.usefbo != 0) {
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, this.fbo[1-this.fbo_index]);
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture[this.fbo_index]);
+  } else {
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+  }
+  this.gl.vertexAttribPointer(this.a_position, this.vertices.size, this.gl.FLOAT, false, 0, 0);
+  this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, this.vertices.length);
+  this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+  if (this.usefbo) {
+    this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
+  }
+
+  // Copy.
+  if (this.usefbo != 0) {
+    this.fbo_index = 1-this.fbo_index;
+    this.blitIteration();
+  } else {
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+    this.gl.copyTexImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGB, 0, 0, this.canvas.width, this.canvas.height, 0);
+    this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+  }
+}
+
+Scene.prototype.blitIteration = function() {
+  this.gl.uniform1i(this.u_blit2screen, 1);
+  if (this.dragging) {
+    // old center is centerx, centery
+    // old size is size
+    // new center is drag_centerx, drag_centery
+    // new size is drag_size
+    var scale = this.drag_size / this.size;
+    var unmapped_drag_centerx = 0.5 + (this.drag_centerx - this.centerx) / (this.xmax - this.xmin);
+    var unmapped_drag_centery = 0.5 + (this.drag_centery - this.centery) / (this.ymax - this.ymin);
+    // 0.5 * scale + shiftx == unmap(drag_centerx)
+    var shiftx = unmapped_drag_centerx - 0.5 * scale;
+    var shifty = unmapped_drag_centery - 0.5 * scale;
+    this.gl.uniform4f(this.u_dragofs, shiftx, shifty, scale, scale);
+  } else {
+    this.gl.uniform4f(this.u_dragofs, 0, 0, 1, 1);
+  }
+  if (this.usefbo != 0) {
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture[this.fbo_index]);
+  } else {
+    this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
+  }
+  this.gl.vertexAttribPointer(this.a_position, this.vertices.size, this.gl.FLOAT, false, 0, 0);
+  this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, this.vertices.length);
+  this.gl.bindTexture(this.gl.TEXTURE_2D, null);
+}
+
+Scene.prototype.drawScene = function() {
+  // Reinit if size changed.
+  if (this.prev_canvas_width != null && this.prev_canvas_width != this.canvas.clientWidth) {
+    this.reinit();
+  } else if (this.prev_canvas_height != null && this.prev_canvas_height != this.canvas.clientHeight) {
+    this.reinit();
+  }
+  this.prev_canvas_width = this.canvas.clientWidth;
+  this.prev_canvas_height = this.canvas.clientHeight;
+
+  // Set up viewport and matrix.
+  this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+  // glOrtho(0, 1, 0, 1, -1, 1)
+  var matrix = [
+    2, 0, 0, 0,
+    0, 2, 0, 0,
+    0, 0, -1, 0,
+    -1, -1, 0, 1
+    ];
+  this.gl.uniformMatrix4fv(this.u_modelViewProjMatrix, false, new Float32Array(matrix));
+  this.gl.uniform1i(this.u_sampler, 0);
+  this.gl.uniform1f(this.u_t, this.t);
+  this.gl.uniform2f(this.u_param, this.paramx, this.paramy);
+  this.gl.uniform1i(this.u_mode, this.mode);
+  this.gl.uniform1i(this.u_dither, this.dither);
+  this.gl.uniform1f(this.u_maxlight, this.maxlight)
+  this.gl.uniform1f(this.u_reflength, this.reflength)
+  this.gl.uniform1i(this.u_palette, this.palette);
+  this.gl.uniform4f(this.u_xymin_xysize, this.xmin, this.ymin, this.xmax - this.xmin, this.ymax - this.ymin);
+  this.gl.uniform1i(this.u_fliphack, this.fliphack);
+  this.fliphack = 0;
+
+  if (this.dragging) {
+    this.blitIteration();
+  } else {
+    this.drawIteration();
+  }
+
+  // Rerun again later.
+  this.t += this.dt;
+
+  var me = this;
+  return setTimeout(function() { return me.drawScene(); }, this.dt * 1000);
+}
+
+var scene;
+function main() {
+  scene = new Scene("canvas");
+}
+</script>
+
+<body onLoad="main();">
+
+<canvas id="canvas" style="width: 100%; height: 100%; position: absolute; left: 0; top: 0;">
+</canvas>
+
+<form action="#" style="position: absolute; left: 0; top: 0; width: 100%;">
+<style scoped>
+table {
+  border: 1px solid black;
+  margin-left: auto;
+  margin-right: auto;
+  background-color: white;
+}
+
+input, select {
+  font-size: 80%;
+}
+
+td, th {
+  font-size: 80%;
+  color: black;
+}
+
+table tbody {
+  display: none;
+}
+table:hover tbody {
+  display: block;
+}
+
+</style>
+<table>
+<thead>
+<tr><th colspan=2>Parameters</th></tr>
+</thead>
+<tbody>
+<tr><th>Mode:</th><td>
+  <select id="mode">
+  <option value="0" selected>Mandel (Map)</option>
+  <option value="1">Julia (Map)</option>
+  <option value="2">Julia (Deform)</option>
+  </select>
+</td></tr>
+<tr><th>Center:</th><td>
+  <label><input type="text" id="centerx" value="0" size="5"></label>
+  <label>+<input type="text" id="centery" value="0" size="5">i</label>
+</td></tr>
+<tr><th>Size:</th><td>
+  <input type="text" id="size" value="0" size="5">
+</td></tr>
+<tr><th>Parameter:</th><td>
+  <label><input type="text" id="paramx" value="0" size="5"></label>
+  <label>+<input type="text" id="paramy" value="0" size="5">i</label>
+</td></tr>
+<tr><th>Max light:</th><td>
+  <label><input type="text" id="maxlight" value="0" size="5"></label>
+</td></tr>
+<tr><th>Reference length:</th><td>
+  <label><input type="text" id="reflength" value="0" size="5"></label>
+</td></tr>
+<tr><td colspan=2>
+  <label><input type="checkbox" id="palette" checked>Invert brightness</label>
+</td></tr>
+<tr><td colspan=2>
+  <label><input type="checkbox" id="dither" checked>Dither</label>
+</td></tr>
+<tr><td colspan=2>
+  <label><input type="checkbox" id="nearest" checked>GL_NEAREST</label>
+</td></tr>
+<tr><td colspan=2>
+  <label><input type="checkbox" id="usefbo" checked>FBO</label>
+</td></tr>
+<tr><th>Upsampling:</th><td>
+  <label><input type="text" id="upsample" size="2">x</label>
+</td></tr>
+<tr><th>&Delta;t:</th><td>
+  <input type="text" id="dt">
+</td></tr>
+<tr><th>Iterations:</th><td>
+  <input type="text" id="n">
+</td></tr>
+<tr><th>f(z) =</th><td>
+  <input type="text" id="formula">
+</td></tr>
+<tr><th>Bailout:</th><td>
+  <input type="text" id="bailout">
+</td></tr>
+</tbody>
+</table>
+</form>
+
+</body>
+</html>
+
