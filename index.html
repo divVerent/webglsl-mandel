@@ -66,13 +66,19 @@ vec4 dither(vec4 c, vec2 tc) {
 // coord2color encodes a coordinate as a color value. Length is encoded as
 // brightness, the angle is encoded as hue.
 vec4 coord2color(vec2 p) {
-  float len = length(p) / u_reflength;
+  float lightness, hue;
 
-  float lightness = (1.0 - 1.0 / (len + 1.0)) * u_maxlight;
+  if (!(length(p) < BAILOUT)) {
+    lightness = u_maxlight;
+  } else {
+    float len = length(p) / u_reflength;
+    lightness = (1.0 - 1.0 / (len + 1.0)) * u_maxlight;
+  }
+  hue = atan(p.y, p.x);
+
   if (u_palette == 1) {
     lightness = 1.0 - lightness;
   }
-  float hue = atan(p.y, p.x);
 
   // Not real HSL, but close enough.
   float red = cos(hue);
@@ -101,7 +107,7 @@ vec2 color2coord(vec4 c) {
   float scale = min(lightness, 1.0 - lightness);
   float len;
   if (lightness >= u_maxlight) {
-    len = 65536.0;
+    len = BAILOUT;
   } else {
     len = 1.0 / (1.0 - lightness / u_maxlight) - 1.0;
   }
@@ -203,7 +209,7 @@ vec2 ccot(vec2 a) {
 
 // whirl applies the fractal iteration formula.
 vec2 whirl(vec2 z, vec2 c) {
-  if (length(z) > BAILOUT) {
+  if (!(length(z) < BAILOUT)) {
     return z;
   }
   // return cmul(z, z) + c;
@@ -785,7 +791,7 @@ Scene.prototype.fixValues = function() {
   if (this.formula == null || this.formula == "") { this.formula = "cmul(z, z) + c"; }
   if (this.bailout == null) { this.bailout = 2.0; }
   if (this.palette == null) { this.palette = 0; }
-  if (!(this.maxlight > 0 && this.maxlight < 1)) { this.maxlight = 1; }
+  if (!(this.maxlight > 0 && this.maxlight < 1)) { this.maxlight = 0.9; }
   if (!(this.reflength > 0)) { this.reflength = 0.25; }
 
   if (this.usefbo != 0 && !(this.OES_texture_float && this.WEBGL_color_buffer_float)) {
