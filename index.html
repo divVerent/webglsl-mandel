@@ -66,15 +66,17 @@ vec4 dither(vec4 c, vec2 tc) {
 // coord2color encodes a coordinate as a color value. Length is encoded as
 // brightness, the angle is encoded as hue.
 vec4 coord2color(vec2 p) {
-  float lightness, hue;
-
+  float lightness;
   if (!(length(p) < BAILOUT)) {
     lightness = u_maxlight;
   } else {
     float len = length(p) / u_reflength;
     lightness = (1.0 - 1.0 / (len + 1.0)) * u_maxlight;
   }
-  hue = atan(p.y, p.x);
+  float hue = atan(p.y, p.x);
+  if (!(hue - 1.0 < hue)) {  // Catch NaN or infinite hue values.
+    hue = 0.0;
+  }
 
   if (u_palette == 1) {
     lightness = 1.0 - lightness;
