@@ -1,59 +1,59 @@
 <!DOCTYPE html>
 <html>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>GLSL Iterator</title>
+<head>
+  <meta name="generator" content="HTML Tidy for HTML5 for Linux version 5.2.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>GLSL Iterator</title>
+  <script id="vshader" type="x-shader/x-vertex">
+  precision highp float;
 
-<script id="vshader" type="x-shader/x-vertex">
-precision highp float;
+  uniform mat4 u_modelViewProjMatrix;
+  uniform int u_fliphack;
+  uniform vec4 u_dragofs;
 
-uniform mat4 u_modelViewProjMatrix;
-uniform int u_fliphack;
-uniform vec4 u_dragofs;
+  attribute vec4 a_position;
 
-attribute vec4 a_position;
+  varying vec2 v_texCoord;
 
-varying vec2 v_texCoord;
-
-// main is almost the most trivial vertex shader ever.
-void main() {
+  // main is almost the most trivial vertex shader ever.
+  void main() {
   v_texCoord = vec2(a_position) * u_dragofs.zw + u_dragofs.xy;
   if (u_fliphack != 0) {
     v_texCoord.y = 1.0 - v_texCoord.y;
   }
   gl_Position = u_modelViewProjMatrix * a_position;
-}
-</script>
+  }
+  </script>
+  <script id="fshader" type="x-shader/x-fragment">
+  //#define N num_iterations
+  //#define USEFBO
 
-<script id="fshader" type="x-shader/x-fragment">
-//#define N num_iterations
-//#define USEFBO
+  precision highp float;
 
-precision highp float;
+  uniform sampler2D u_sampler;
+  uniform float u_t;
+  uniform int u_mode;
+  uniform vec2 u_param;
+  uniform int u_dither;
+  uniform int u_blit2screen;
+  uniform int u_palette;
+  uniform float u_maxlight;
+  uniform float u_reflength;
 
-uniform sampler2D u_sampler;
-uniform float u_t;
-uniform int u_mode;
-uniform vec2 u_param;
-uniform int u_dither;
-uniform int u_blit2screen;
-uniform int u_palette;
-uniform float u_maxlight;
-uniform float u_reflength;
+  // View rectangle.
+  uniform vec4 u_xymin_xysize;
 
-// View rectangle.
-uniform vec4 u_xymin_xysize;
+  varying vec2 v_texCoord;
 
-varying vec2 v_texCoord;
+  #define M_PI 3.1415926535897932384626433832795
 
-#define M_PI 3.1415926535897932384626433832795
-
-// Some simple random noise generator.
-float rand(vec2 tc) {
+  // Some simple random noise generator.
+  float rand(vec2 tc) {
   return fract(sin(dot(tc.xy, vec2(12.9898, 78.233))) * 43758.5453);
-}
+  }
 
-// Simple dithering. No temporal noise, spatial noise only.
-vec4 dither(vec4 c, vec2 tc) {
+  // Simple dithering. No temporal noise, spatial noise only.
+  vec4 dither(vec4 c, vec2 tc) {
   vec4 p = vec4(
       rand(tc) - 0.5,
       rand(tc + vec2(1.0, 0.0)) - 0.5,
@@ -61,197 +61,208 @@ vec4 dither(vec4 c, vec2 tc) {
       0.0
       );
   return clamp(c + p / 255.0, 0.0, 1.0);
-}
-
-// coord2color encodes a coordinate as a color value. Length is encoded as
-// brightness, the angle is encoded as hue.
-vec4 coord2color(vec2 p) {
-  float lightness;
-  if (!(length(p) < BAILOUT)) {
-    lightness = u_maxlight;
-  } else {
-    float len = length(p) / u_reflength;
-    lightness = (1.0 - 1.0 / (len + 1.0)) * u_maxlight;
-  }
-  float hue = atan(p.y, p.x);
-  if (!(hue - 1.0 < hue)) {  // Catch NaN or infinite hue values.
-    hue = 0.0;
   }
 
-  if (u_palette == 1) {
-    lightness = 1.0 - lightness;
+  // coord2color encodes a coordinate as a color value. Length is encoded as
+  // brightness, the angle is encoded as hue.
+  vec4 coord2color(vec2 p) {
+    // Map direction to hue.
+    float hue = atan(p.y, p.x);
+    if (!(hue - 1.0 < hue)) {  // Catch NaN or infinite hue values.
+      hue = 0.0;
+    }
+
+    // Map hue to RGB.
+    float red = cos(hue);
+    float green = cos(hue + M_PI * 4.0 / 3.0);
+    float blue = cos(hue + M_PI * 2.0 / 3.0);
+
+    // Non-linearly map the length.
+    float lightness_raw;
+    if (!(length(p) < BAILOUT)) {
+      lightness_raw = min(1.0, u_maxlight * 1.01);  // Make sure this decodes as > u_maxlight.
+    } else {
+      lightness_raw = (1.0 - 1.0 / ((length(p) / u_reflength) + 1.0)) * u_maxlight;
+    }
+
+    // Map the lightness.
+    float lightness;
+    if (u_palette >= 1) {
+      lightness = 1.0 - lightness_raw;
+    } else {
+      lightness = lightness_raw;
+    }
+
+    // Encode the color.
+    float scale = min(lightness, 1.0 - lightness);
+    vec4 ret = vec4(
+        lightness + red * scale,
+        lightness + green * scale,
+        lightness + blue * scale,
+        1.0);
+
+    // Dither if needed.
+    if (u_dither != 0) {
+      return dither(ret, v_texCoord);
+    } else {
+      return ret;
+    }
   }
 
-  // Not real HSL, but close enough.
-  float red = cos(hue);
-  float green = cos(hue + M_PI * 4.0 / 3.0);
-  float blue = cos(hue + M_PI * 2.0 / 3.0);
-  float scale = min(lightness, 1.0 - lightness);
-  vec4 ret = vec4(
-      lightness + red * scale,
-      lightness + green * scale,
-      lightness + blue * scale,
-      1.0);
+  // color2coord is the inverse map of coord2color.
+  vec2 color2coord(vec4 c) {
+    // Decode the color.
+    float lightness = (c.r + c.g + c.b) / 3.0;
+    float red = c.r - lightness;
+    float green = c.g - lightness;
+    float blue = c.b - lightness;
 
-  if (u_dither != 0) {
-    return dither(ret, v_texCoord);
-  } else {
-    return ret;
-  }
-}
+    // Unmap the lightness.
+    float lightness_raw;
+    if (u_palette >= 1) {
+      lightness_raw = 1.0 - lightness;
+    } else {
+      lightness_raw = lightness;
+    }
 
-// color2coord is the inverse map of coord2color.
-vec2 color2coord(vec4 c) {
-  float lightness = dot(c.rgb, vec3(1.0 / 3.0));
-  if (u_palette == 1) {
-    lightness = 1.0 - lightness;
-  }
-  float scale = min(lightness, 1.0 - lightness);
-  float len;
-  if (lightness >= u_maxlight) {
-    len = BAILOUT;
-  } else {
-    len = 1.0 / (1.0 - lightness / u_maxlight) - 1.0;
-  }
+    // Unmap the length.
+    float len;
+    if (lightness_raw >= u_maxlight) {
+      len = BAILOUT * 1.01;  // Just be _sure_ above bailout.
+    } else {
+      len = (1.0 / (1.0 - lightness_raw / u_maxlight) - 1.0) * u_reflength;
+    }
 
-  if (scale == 0.0) {
-    return vec2(len, 0.0);
-  }
+    // Get back the hue from RGB.
+    if (blue == green && red == 0.0) {
+      return vec2(len, 0.0);
+    }
+    float hue = atan((green - blue) / sqrt(3.0), red);
+    // No idea why hue is sometimes NaN despite this not being atan(0, 0)...
+    if (hue != hue) {
+      return vec2(len, 0.0);
+    }
 
-  float red = c.r - lightness;
-  float green = c.g - lightness;
-  float blue = c.b - lightness;
-
-  if (blue == green && red == 0.0) {
-    return vec2(len, 0.0);
+    // Consider the hue the direction.
+    return len * vec2(cos(hue), sin(hue));
   }
 
-  float hue = atan((green - blue) / sqrt(3.0), red);
-
-  // No idea why hue is sometimes NaN despite this not being atan(0, 0)...
-  if (hue != hue) {
-    return vec2(len, 0.0);
-  }
-
-  return len * u_reflength * vec2(cos(hue), sin(hue));
-}
-
-// tc2coord converts a texcoord to a coordinate. Simply applies the view
-// rectangle.
-vec2 tc2coord(vec2 p) {
+  // tc2coord converts a texcoord to a coordinate. Simply applies the view
+  // rectangle.
+  vec2 tc2coord(vec2 p) {
   return p * u_xymin_xysize.zw + u_xymin_xysize.xy;
-}
+  }
 
-// coord2tc is the inverse map of tc2coord.
-vec2 coord2tc(vec2 p) {
+  // coord2tc is the inverse map of tc2coord.
+  vec2 coord2tc(vec2 p) {
   return (p - u_xymin_xysize.xy) / u_xymin_xysize.zw;
   // return mod((p - u_xymin_xysize.xy) / u_xymin_xysize.zw, vec2(1.0, 1.0));
-}
+  }
 
-// cmul multiplies two complex values.
-vec2 cmul(vec2 a, vec2 b) {
+  // cmul multiplies two complex values.
+  vec2 cmul(vec2 a, vec2 b) {
   return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
-}
+  }
 
-// cabs2 returns |a|^2
-float cabs2(vec2 a) {
+  // cabs2 returns |a|^2
+  float cabs2(vec2 a) {
   return dot(a, a);
-}
+  }
 
-// cabs returns |a|
-float cabs(vec2 a) {
+  // cabs returns |a|
+  float cabs(vec2 a) {
   return sqrt(dot(a, a));
-}
+  }
 
-// x*conj returns x~
-const vec2 conj = vec2(1.0, -1.0);
+  // x*conj returns x~
+  const vec2 conj = vec2(1.0, -1.0);
 
-// cdiv divides two complex values.
-vec2 cdiv(vec2 a, vec2 b) {
+  // cdiv divides two complex values.
+  vec2 cdiv(vec2 a, vec2 b) {
   return cmul(a, b*conj) / cabs2(b);
-}
+  }
 
-// cexp does what you think it does.
-vec2 cexp(vec2 a) {
+  // cexp does what you think it does.
+  vec2 cexp(vec2 a) {
   return exp(a.x) * vec2(cos(a.y), sin(a.y));
-}
+  }
 
-// clog does what you think it does.
-vec2 clog(vec2 a) {
+  // clog does what you think it does.
+  vec2 clog(vec2 a) {
   return vec2(
     log(cabs2(a)) * 0.5,
     atan(a.y, a.x)
   );
-}
+  }
 
-// cpow does what you think it does.
-vec2 cpow(vec2 a, vec2 b) {
+  // cpow does what you think it does.
+  vec2 cpow(vec2 a, vec2 b) {
   return cexp(cmul(clog(a), b));
-}
+  }
 
-// csin does what you think it does.
-vec2 csin(vec2 a) {
+  // csin does what you think it does.
+  vec2 csin(vec2 a) {
   return vec2(0.5, -0.5) * (cexp(vec2(-a.y, a.x)) - cexp(vec2(a.y, -a.x))).yx;
-}
+  }
 
-// ccos does what you think it does.
-vec2 ccos(vec2 a) {
+  // ccos does what you think it does.
+  vec2 ccos(vec2 a) {
   return vec2(0.5, 0.5) * (cexp(vec2(-a.y, a.x)) + cexp(vec2(a.y, -a.x)));
-}
+  }
 
-// ctan does what you think it does.
-vec2 ctan(vec2 a) {
+  // ctan does what you think it does.
+  vec2 ctan(vec2 a) {
   return cdiv(csin(a), ccos(a));
-}
+  }
 
-// ccot does what you think it does.
-vec2 ccot(vec2 a) {
+  // ccot does what you think it does.
+  vec2 ccot(vec2 a) {
   return cdiv(ccos(a), csin(a));
-}
+  }
 
-// whirl applies the fractal iteration formula.
-vec2 whirl(vec2 z, vec2 c) {
+  // whirl applies the fractal iteration formula.
+  vec2 whirl(vec2 z, vec2 c) {
   if (!(length(z) < BAILOUT)) {
     return z;
   }
   // return cmul(z, z) + c;
   return FORMULA;
-}
+  }
 
-vec2 whirln(vec2 z, vec2 c) {
+  vec2 whirln(vec2 z, vec2 c) {
   for (int i = 0; i < N; ++i)
     z = whirl(z, c);
   return z;
-}
+  }
 
-// sample samples a pixel.
-vec4 sample(vec2 tc) {
+  // sample samples a pixel.
+  vec4 sample(vec2 tc) {
   if (tc.x < 0.0 || tc.y < 0.0 || tc.x > 1.0 || tc.y > 1.0) {
     return vec4(99.0, 99.0, 99.0, 1.0);
   }
   return texture2D(u_sampler, tc);
-}
+  }
 
-// sample2coord samples a pixel and converts it to a coordinate.
-vec2 sample2coord(vec2 tc) {
-#ifdef USEFBO
+  // sample2coord samples a pixel and converts it to a coordinate.
+  vec2 sample2coord(vec2 tc) {
+  #ifdef USEFBO
   return sample(tc).xy;
-#else
+  #else
   return color2coord(sample(tc));
-#endif
-}
+  #endif
+  }
 
-// sample2color samples a pixel and converts it to a color.
-vec4 sample2color(vec2 tc) {
-#ifdef USEFBO
+  // sample2color samples a pixel and converts it to a color.
+  vec4 sample2color(vec2 tc) {
+  #ifdef USEFBO
   return coord2color(sample(tc).xy);
-#else
+  #else
   return sample(tc);
-#endif
-}
+  #endif
+  }
 
-// main applies an iteration of the fractal.
-void main() {
+  // main applies an iteration of the fractal.
+  void main() {
   if (u_blit2screen != 0) {
     gl_FragColor = sample2color(v_texCoord);
   } else {
@@ -286,17 +297,16 @@ void main() {
         return;
       }
     }
-#ifdef USEFBO
+  #ifdef USEFBO
     gl_FragColor = vec4(zzc, 0.0, 0.0);
-#else
+  #else
     gl_FragColor = coord2color(zzc);
-#endif
+  #endif
   }
-}
-</script>
-
-<script>
-function Scene(canvas) {
+  }
+  </script>
+  <script>
+  function Scene(canvas) {
   this.canvas = document.getElementById(canvas);
   this.drag_dx = 0;
   this.drag_dy = 0;
@@ -318,9 +328,9 @@ function Scene(canvas) {
   this.canvas.ontouchstart = function(ev) { me.canvasTouchStart(ev); return false; };
   this.canvas.ontouchmove = function(ev) { me.canvasTouchMove(ev); return false; };
   this.canvas.ontouchend = function(ev) { me.canvasTouchEnd(ev); return false; };
-}
+  }
 
-Scene.prototype.setCoords = function() {
+  Scene.prototype.setCoords = function() {
   var canvasAspect = this.canvas.clientWidth / this.canvas.clientHeight;
   if (canvasAspect < 1.0) {
     var realYR = this.size / canvasAspect;
@@ -335,9 +345,9 @@ Scene.prototype.setCoords = function() {
     this.xmax = this.centerx + realXR;
     this.ymax = this.centery + this.size;
   }
-}
+  }
 
-Scene.prototype.reinit = function() {
+  Scene.prototype.reinit = function() {
   this.error = null;
   this.initShaders();
   if (this.error) {
@@ -359,9 +369,9 @@ Scene.prototype.reinit = function() {
     }
     this.gl.bindFramebuffer(this.gl.FRAMEBUFFER, null);
   }
-}
+  }
 
-Scene.prototype.scale = function(x0, y0, x1, y1, factor) {
+  Scene.prototype.scale = function(x0, y0, x1, y1, factor) {
   var px = this.xmin + (this.xmax - this.xmin) * (x0 / this.canvas.clientWidth);
   var py = this.ymax + (this.ymin - this.ymax) * (y0 / this.canvas.clientHeight);
   this.size *= factor;
@@ -371,25 +381,25 @@ Scene.prototype.scale = function(x0, y0, x1, y1, factor) {
   this.centerx -= npx - px;
   this.centery -= npy - py;
   this.fixValues();
-}
+  }
 
-Scene.prototype.getX = function(ev) {
+  Scene.prototype.getX = function(ev) {
   return ev.clientX - this.canvas.getBoundingClientRect().left;
-}
+  }
 
-Scene.prototype.getY = function(ev) {
+  Scene.prototype.getY = function(ev) {
   return ev.clientY - this.canvas.getBoundingClientRect().top;
-}
+  }
 
-Scene.prototype.dragStart = function(mode) {
+  Scene.prototype.dragStart = function(mode) {
   this.dragging = mode;
   this.drag_starttime = new Date().getTime();
   this.drag_centerx = this.centerx;
   this.drag_centery = this.centery;
   this.drag_size = this.size;
-}
+  }
 
-Scene.prototype.dragCommit = function(x, y) {
+  Scene.prototype.dragCommit = function(x, y) {
   this.dragging = 0;
   var dcx = Math.abs((this.drag_centerx - this.centerx) / this.size);
   var dcy = Math.abs((this.drag_centery - this.centery) / this.size);
@@ -406,15 +416,15 @@ Scene.prototype.dragCommit = function(x, y) {
       this.toggleJulia(x, y);
     }
   }
-}
+  }
 
-Scene.prototype.touchReset = function(fingerx, fingery, dist) {
+  Scene.prototype.touchReset = function(fingerx, fingery, dist) {
   this.drag_touch_dist = dist;
   this.drag_touch_fingerx = fingerx;
   this.drag_touch_fingery = fingery;
-}
+  }
 
-Scene.prototype.touchUpdate = function(fingerx, fingery, dist) {
+  Scene.prototype.touchUpdate = function(fingerx, fingery, dist) {
   var dcx = fingerx - this.drag_touch_fingerx;
   var dcy = fingery - this.drag_touch_fingery;
   var sd = (dist == 0 || this.drag_touch_dist == 0) ? 1 : dist / this.drag_touch_dist;
@@ -431,9 +441,9 @@ Scene.prototype.touchUpdate = function(fingerx, fingery, dist) {
   this.drag_size /= sd;
 
   this.touchReset(fingerx, fingery, dist);
-}
+  }
 
-Scene.prototype.touchEvent = function(ev, reset) {
+  Scene.prototype.touchEvent = function(ev, reset) {
   var fingerx = 0;
   var fingery = 0;
   for (var i = 0; i < ev.touches.length; ++i) {
@@ -453,9 +463,9 @@ Scene.prototype.touchEvent = function(ev, reset) {
     this.touchReset(fingerx, fingery, dist);
   else
     this.touchUpdate(fingerx, fingery, dist);
-}
+  }
 
-Scene.prototype.canvasTouchStart = function(ev) {
+  Scene.prototype.canvasTouchStart = function(ev) {
   if (this.dragging == 1)
     return;
 
@@ -463,16 +473,16 @@ Scene.prototype.canvasTouchStart = function(ev) {
     this.dragStart(2);
 
   this.touchEvent(ev, true);
-}
+  }
 
-Scene.prototype.canvasTouchMove = function(ev) {
+  Scene.prototype.canvasTouchMove = function(ev) {
   if (this.dragging != 2)
     return;
 
   this.touchEvent(ev, false);
-}
+  }
 
-Scene.prototype.canvasTouchEnd = function(ev) {
+  Scene.prototype.canvasTouchEnd = function(ev) {
   if (this.dragging != 2)
     return;
 
@@ -482,10 +492,10 @@ Scene.prototype.canvasTouchEnd = function(ev) {
   } else {
     this.touchEvent(ev, true);
   }
-}
+  }
 
-// Implement mouse as touch emulation.
-Scene.prototype.canvasMouseDown = function(ev) {
+  // Implement mouse as touch emulation.
+  Scene.prototype.canvasMouseDown = function(ev) {
   if (this.dragging == 2)
     return;
 
@@ -493,24 +503,24 @@ Scene.prototype.canvasMouseDown = function(ev) {
     this.dragStart(1);
 
   this.touchReset(this.getX(ev), this.getY(ev), 0);
-}
+  }
 
-Scene.prototype.canvasMouseMove = function(ev) {
+  Scene.prototype.canvasMouseMove = function(ev) {
   if (this.dragging != 1)
     return;
 
   this.touchUpdate(this.getX(ev), this.getY(ev), 0);
-}
+  }
 
-Scene.prototype.canvasMouseUp = function(ev) {
+  Scene.prototype.canvasMouseUp = function(ev) {
   if (this.dragging != 1)
     return;
 
   this.dragCommit(this.drag_touch_fingerx, this.drag_touch_fingery);
-}
+  }
 
-// wheel == factor 2 zoom
-Scene.prototype.canvasMouseWheel = function(ev) {
+  // wheel == factor 2 zoom
+  Scene.prototype.canvasMouseWheel = function(ev) {
   var x = this.getX(ev);
   var y = this.getY(ev);
   var t = new Date().getTime();
@@ -522,9 +532,9 @@ Scene.prototype.canvasMouseWheel = function(ev) {
   } else if (ev.deltaY > 0) {
     this.scale(x, y, x, y, 2.0);
   }
-}
+  }
 
-Scene.prototype.toggleJulia = function(x, y) {
+  Scene.prototype.toggleJulia = function(x, y) {
   x = this.xmin + (this.xmax - this.xmin) * (x / this.canvas.clientWidth);
   y = this.ymax + (this.ymin - this.ymax) * (y / this.canvas.clientHeight);
 
@@ -550,9 +560,9 @@ Scene.prototype.toggleJulia = function(x, y) {
   }
 
   this.fixValues();
-}
+  }
 
-Scene.prototype.initGL = function() {
+  Scene.prototype.initGL = function() {
   try {
     this.gl = this.canvas.getContext("experimental-webgl", {alpha: false});
     this.OES_texture_float = this.gl.getExtension("OES_texture_float");
@@ -564,9 +574,9 @@ Scene.prototype.initGL = function() {
   if (!this.gl) {
     alert("Could not initialise WebGL, sorry.");
   }
-}
+  }
 
-Scene.prototype.getShader = function(id, n) {
+  Scene.prototype.getShader = function(id, n) {
   var shaderScript = document.getElementById(id);
   if (!shaderScript) {
     return null;
@@ -606,17 +616,17 @@ Scene.prototype.getShader = function(id, n) {
   }
 
   return shader;
-}
+  }
 
-Scene.prototype.getAttribute = function(identifier) {
+  Scene.prototype.getAttribute = function(identifier) {
   this[identifier] = this.gl.getAttribLocation(this.program, identifier);
-}
+  }
 
-Scene.prototype.getUniform = function(identifier) {
+  Scene.prototype.getUniform = function(identifier) {
   this[identifier] = this.gl.getUniformLocation(this.program, identifier);
-}
+  }
 
-Scene.prototype.initShaders = function() {
+  Scene.prototype.initShaders = function() {
   var fragmentShader = this.getShader("fshader");
   var vertexShader = this.getShader("vshader");
 
@@ -651,9 +661,9 @@ Scene.prototype.initShaders = function() {
   this.getUniform("u_dragofs");
 
   this.gl.useProgram(this.program);
-}
+  }
 
-Scene.prototype.initBuffers = function() {
+  Scene.prototype.initBuffers = function() {
 
   if (this.upsample < 0) {
     // Negative means forcing pot.
@@ -708,9 +718,9 @@ Scene.prototype.initBuffers = function() {
     this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.CLAMP_TO_EDGE);
     this.gl.bindTexture(this.gl.TEXTURE_2D, null);
   }
-}
+  }
 
-Scene.prototype.loadFromLocation = function() {
+  Scene.prototype.loadFromLocation = function() {
   try {
     var parse = function(s) {
       var f = parseFloat(s);
@@ -743,9 +753,9 @@ Scene.prototype.loadFromLocation = function() {
   } catch(e) {
   }
   this.fixValues();
-}
+  }
 
-Scene.prototype.saveToLocation = function() {
+  Scene.prototype.saveToLocation = function() {
   var state = [
     this.mode,
     this.paramx,
@@ -772,9 +782,9 @@ Scene.prototype.saveToLocation = function() {
   if (location.hash.substr(1) != s) {
     history.pushState('', '', '#' + JSON.stringify(state));
   }
-}
+  }
 
-Scene.prototype.fixValues = function() {
+  Scene.prototype.fixValues = function() {
   if (this.mode == null) { this.mode = 0; }
   if (this.paramx == null) { this.paramx = 0.0; }
   if (this.paramy == null) { this.paramy = 0.0; }
@@ -830,9 +840,9 @@ Scene.prototype.fixValues = function() {
   } else if (need_reinit) {
     this.reinit();
   }
-}
+  }
 
-Scene.prototype.saveFormField = function(field) {
+  Scene.prototype.saveFormField = function(field) {
   var fld = document.getElementById(field);
   var newValue = this[field];
   var prevValue = this["prev_" + field];
@@ -841,9 +851,9 @@ Scene.prototype.saveFormField = function(field) {
   if ("value" in fld) { fld.value = newValue; }
   this["prev_" + field] = newValue;
   return (prevValue != null && newValue != prevValue);
-}
+  }
 
-Scene.prototype.loadFormField = function(field) {
+  Scene.prototype.loadFormField = function(field) {
   var fld = document.getElementById(field);
   if (field == "formula") { return fld.value; }
   if ("selectedIndex" in fld) { return fld.selectedIndex; }
@@ -856,9 +866,9 @@ Scene.prototype.loadFormField = function(field) {
     return f;
   }
   return null;
-}
+  }
 
-Scene.prototype.loadFromForm = function() {
+  Scene.prototype.loadFromForm = function() {
   this.mode = this.loadFormField("mode");
   this.paramx = this.loadFormField("paramx");
   this.paramy = this.loadFormField("paramy");
@@ -877,9 +887,9 @@ Scene.prototype.loadFromForm = function() {
   this.maxlight = this.loadFormField("maxlight");
   this.reflength = this.loadFormField("reflength");
   this.fixValues();
-}
+  }
 
-Scene.prototype.handleFormFields = function() {
+  Scene.prototype.handleFormFields = function() {
   var me = this;
   document.getElementById("paramx").onchange = function() { me.loadFromForm(); };
   document.getElementById("paramy").onchange = function() { me.loadFromForm(); };
@@ -899,29 +909,29 @@ Scene.prototype.handleFormFields = function() {
   document.getElementById("maxlight").onchange = function() { me.loadFromForm(); };
   document.getElementById("reflength").onchange = function() { me.loadFromForm(); };
   window.onpopstate = function() { me.loadFromLocation(); };
-}
+  }
 
-Scene.prototype.resetScene = function() {
+  Scene.prototype.resetScene = function() {
   this.setCoords();
   this.t = 0.0;
-}
+  }
 
-Scene.prototype.loadTexture = function(url) {
+  Scene.prototype.loadTexture = function(url) {
   var img = new Image();
   var me = this;
   img.onload = function() { me.loadedTexture(img); };
   img.src = url;
-}
+  }
 
-Scene.prototype.loadedTexture = function(img) {
+  Scene.prototype.loadedTexture = function(img) {
   this.gl.activeTexture(this.gl.TEXTURE0);
   this.gl.bindTexture(this.gl.TEXTURE_2D, this.texture);
   this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, img);
   this.gl.bindTexture(this.gl.TEXTURE_2D, null);
   this.fliphack = 1;
-}
+  }
 
-Scene.prototype.drawIteration = function() {
+  Scene.prototype.drawIteration = function() {
   this.gl.uniform1i(this.u_blit2screen, 0);
   this.gl.uniform4f(this.u_dragofs, 0, 0, 1, 1);
   if (this.usefbo != 0) {
@@ -946,9 +956,9 @@ Scene.prototype.drawIteration = function() {
     this.gl.copyTexImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGB, 0, 0, this.canvas.width, this.canvas.height, 0);
     this.gl.bindTexture(this.gl.TEXTURE_2D, null);
   }
-}
+  }
 
-Scene.prototype.blitIteration = function() {
+  Scene.prototype.blitIteration = function() {
   this.gl.uniform1i(this.u_blit2screen, 1);
   if (this.dragging) {
     // old center is centerx, centery
@@ -973,9 +983,9 @@ Scene.prototype.blitIteration = function() {
   this.gl.vertexAttribPointer(this.a_position, this.vertices.size, this.gl.FLOAT, false, 0, 0);
   this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, this.vertices.length);
   this.gl.bindTexture(this.gl.TEXTURE_2D, null);
-}
+  }
 
-Scene.prototype.drawScene = function() {
+  Scene.prototype.drawScene = function() {
   // Reinit if size changed.
   if (this.prev_canvas_width != null && this.prev_canvas_width != this.canvas.clientWidth) {
     this.reinit();
@@ -1018,105 +1028,117 @@ Scene.prototype.drawScene = function() {
 
   var me = this;
   return setTimeout(function() { return me.drawScene(); }, this.dt * 1000);
-}
+  }
 
-var scene;
-function main() {
+  var scene;
+  function main() {
   scene = new Scene("canvas");
-}
-</script>
+  }
+  </script>
+</head>
+<body onload="main();">
+  <canvas id="canvas" style="width: 100%; height: 100%; position: absolute; left: 0; top: 0;"></canvas>
+  <form action="#" style="position: absolute; left: 0; top: 0; width: 100%;">
+    <style scoped="">
+    table {
+    border: 1px solid black;
+    margin-left: auto;
+    margin-right: auto;
+    background-color: white;
+    }
 
-<body onLoad="main();">
+    input, select {
+    font-size: 80%;
+    }
 
-<canvas id="canvas" style="width: 100%; height: 100%; position: absolute; left: 0; top: 0;">
-</canvas>
+    td, th {
+    font-size: 80%;
+    color: black;
+    }
 
-<form action="#" style="position: absolute; left: 0; top: 0; width: 100%;">
-<style scoped>
-table {
-  border: 1px solid black;
-  margin-left: auto;
-  margin-right: auto;
-  background-color: white;
-}
+    table tbody {
+    display: none;
+    }
+    table:hover tbody {
+    display: block;
+    }
 
-input, select {
-  font-size: 80%;
-}
-
-td, th {
-  font-size: 80%;
-  color: black;
-}
-
-table tbody {
-  display: none;
-}
-table:hover tbody {
-  display: block;
-}
-
-</style>
-<table>
-<thead>
-<tr><th colspan=2>Parameters</th></tr>
-</thead>
-<tbody>
-<tr><th>Mode:</th><td>
-  <select id="mode">
-  <option value="0" selected>Mandel (Map)</option>
-  <option value="1">Julia (Map)</option>
-  <option value="2">Julia (Deform)</option>
-  </select>
-</td></tr>
-<tr><th>Center:</th><td>
-  <label><input type="text" id="centerx" value="0" size="5"></label>
-  <label>+<input type="text" id="centery" value="0" size="5">i</label>
-</td></tr>
-<tr><th>Size:</th><td>
-  <input type="text" id="size" value="0" size="5">
-</td></tr>
-<tr><th>Parameter:</th><td>
-  <label><input type="text" id="paramx" value="0" size="5"></label>
-  <label>+<input type="text" id="paramy" value="0" size="5">i</label>
-</td></tr>
-<tr><th>Max light:</th><td>
-  <label><input type="text" id="maxlight" value="0" size="5"></label>
-</td></tr>
-<tr><th>Reference length:</th><td>
-  <label><input type="text" id="reflength" value="0" size="5"></label>
-</td></tr>
-<tr><td colspan=2>
-  <label><input type="checkbox" id="palette" checked>Invert brightness</label>
-</td></tr>
-<tr><td colspan=2>
-  <label><input type="checkbox" id="dither" checked>Dither</label>
-</td></tr>
-<tr><td colspan=2>
-  <label><input type="checkbox" id="nearest" checked>GL_NEAREST</label>
-</td></tr>
-<tr><td colspan=2>
-  <label><input type="checkbox" id="usefbo" checked>FBO</label>
-</td></tr>
-<tr><th>Upsampling:</th><td>
-  <label><input type="text" id="upsample" size="2">x</label>
-</td></tr>
-<tr><th>&Delta;t:</th><td>
-  <input type="text" id="dt">
-</td></tr>
-<tr><th>Iterations:</th><td>
-  <input type="text" id="n">
-</td></tr>
-<tr><th>f(z) =</th><td>
-  <input type="text" id="formula">
-</td></tr>
-<tr><th>Bailout:</th><td>
-  <input type="text" id="bailout">
-</td></tr>
-</tbody>
-</table>
-</form>
-
+    </style>
+    <table>
+      <thead>
+        <tr>
+          <th colspan="2">Parameters</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th>Mode:</th>
+          <td><select id="mode">
+            <option value="0" selected>
+              Mandel (Map)
+            </option>
+            <option value="1">
+              Julia (Map)
+            </option>
+            <option value="2">
+              Julia (Deform)
+            </option>
+          </select></td>
+        </tr>
+        <tr>
+          <th>Center:</th>
+          <td><label><input type="text" id="centerx" value="0" size="5"></label> <label>+<input type="text" id="centery" value="0" size="5">i</label></td>
+        </tr>
+        <tr>
+          <th>Size:</th>
+          <td><input type="text" id="size" value="0" size="5"></td>
+        </tr>
+        <tr>
+          <th>Parameter:</th>
+          <td><label><input type="text" id="paramx" value="0" size="5"></label> <label>+<input type="text" id="paramy" value="0" size="5">i</label></td>
+        </tr>
+        <tr>
+          <th>Max light:</th>
+          <td><label><input type="text" id="maxlight" value="0" size="5"></label></td>
+        </tr>
+        <tr>
+          <th>Reference length:</th>
+          <td><label><input type="text" id="reflength" value="0" size="5"></label></td>
+        </tr>
+        <tr>
+          <td colspan="2"><label><input type="checkbox" id="palette" checked>Invert brightness</label></td>
+        </tr>
+        <tr>
+          <td colspan="2"><label><input type="checkbox" id="dither" checked>Dither</label></td>
+        </tr>
+        <tr>
+          <td colspan="2"><label><input type="checkbox" id="nearest" checked>GL_NEAREST</label></td>
+        </tr>
+        <tr>
+          <td colspan="2"><label><input type="checkbox" id="usefbo" checked>FBO</label></td>
+        </tr>
+        <tr>
+          <th>Upsampling:</th>
+          <td><label><input type="text" id="upsample" size="2">x</label></td>
+        </tr>
+        <tr>
+          <th>Δt:</th>
+          <td><input type="text" id="dt"></td>
+        </tr>
+        <tr>
+          <th>Iterations:</th>
+          <td><input type="text" id="n"></td>
+        </tr>
+        <tr>
+          <th>f(z) =</th>
+          <td><input type="text" id="formula"></td>
+        </tr>
+        <tr>
+          <th>Bailout:</th>
+          <td><input type="text" id="bailout"></td>
+        </tr>
+      </tbody>
+    </table>
+  </form>
 </body>
 </html>
-
