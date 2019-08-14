@@ -721,67 +721,67 @@
   }
 
   Scene.prototype.loadFromLocation = function() {
-  try {
-    var parse = function(s) {
-      var f = parseFloat(s);
-      if (isNaN(f)) {
-        return null;
-      }
-      return f;
-    };
-    var state = JSON.parse(location.hash.substr(1));
-    this.mode = parse(state[0]);
-    this.paramx = parse(state[1]);
-    this.paramy = parse(state[2]);
-    this.dt = parse(state[3]);
-    this.dither = parse(state[4]);
-    this.nearest = parse(state[5]);
-    this.upsample = parse(state[6]);
-    this.save_x = parse(state[7]);
-    this.save_y = parse(state[8]);
-    this.save_i = parse(state[9]);
-    this.n = parse(state[10]);
-    this.usefbo = parse(state[11]);
-    this.centerx = parse(state[12]);
-    this.centery = parse(state[13]);
-    this.size = parse(state[14]);
-    this.formula = state[15];
-    this.bailout = parse(state[16]);
-    this.palette = parse(state[17]);
-    this.maxlight = parse(state[18]);
-    this.reflength = parse(state[19]);
-  } catch(e) {
-  }
-  this.fixValues();
+    try {
+      var parse = function(s) {
+        var f = parseFloat(s);
+        if (isNaN(f)) {
+          return null;
+        }
+        return f;
+      };
+      var state = JSON.parse(unescape(location.hash.substr(1)));
+      this.mode = parse(state.mode);
+      this.paramx = parse(state.paramx);
+      this.paramy = parse(state.paramy);
+      this.dt = parse(state.dt);
+      this.dither = parse(state.dither);
+      this.nearest = parse(state.nearest);
+      this.upsample = parse(state.upsample);
+      this.save_x = parse(state.save_x);
+      this.save_y = parse(state.save_y);
+      this.save_i = parse(state.save_i);
+      this.n = parse(state.n);
+      this.usefbo = parse(state.usefbo);
+      this.centerx = parse(state.centerx);
+      this.centery = parse(state.centery);
+      this.size = parse(state.size);
+      this.formula = state.formula;
+      this.bailout = parse(state.bailout);
+      this.palette = parse(state.palette);
+      this.maxlight = parse(state.maxlight);
+      this.reflength = parse(state.reflength);
+    } catch(e) {
+    }
+    this.fixValues();
   }
 
   Scene.prototype.saveToLocation = function() {
-  var state = [
-    this.mode,
-    this.paramx,
-    this.paramy,
-    this.dt,
-    this.dither,
-    this.nearest,
-    this.upsample,
-    this.save_x,
-    this.save_y,
-    this.save_i,
-    this.n,
-    this.usefbo,
-    this.centerx,
-    this.centery,
-    this.size,
-    this.formula,
-    this.bailout,
-    this.palette,
-    this.maxlight,
-    this.reflength,
-    ];
-  var s = JSON.stringify(state);
-  if (location.hash.substr(1) != s) {
-    history.pushState('', '', '#' + JSON.stringify(state));
-  }
+    var state = {
+      mode: this.mode,
+      paramx: this.paramx,
+      paramy: this.paramy,
+      dt: this.dt,
+      dither: this.dither,
+      nearest: this.nearest,
+      upsample: this.upsample,
+      save_x: this.save_x,
+      save_y: this.save_y,
+      save_i: this.save_i,
+      n: this.n,
+      usefbo: this.usefbo,
+      centerx: this.centerx,
+      centery: this.centery,
+      size: this.size,
+      formula: this.formula,
+      bailout: this.bailout,
+      palette: this.palette,
+      maxlight: this.maxlight,
+      reflength: this.reflength,
+    };
+    var s = escape(JSON.stringify(state));
+    if (location.hash.substr(1) != s) {
+      history.pushState('', '', '#' + s);
+    }
   }
 
   Scene.prototype.fixValues = function() {
