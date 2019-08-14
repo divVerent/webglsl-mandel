@@ -17,11 +17,11 @@
 
   // main is almost the most trivial vertex shader ever.
   void main() {
-  v_texCoord = vec2(a_position) * u_dragofs.zw + u_dragofs.xy;
-  if (u_fliphack != 0) {
-    v_texCoord.y = 1.0 - v_texCoord.y;
-  }
-  gl_Position = u_modelViewProjMatrix * a_position;
+    v_texCoord = vec2(a_position) * u_dragofs.zw + u_dragofs.xy;
+    if (u_fliphack != 0) {
+      v_texCoord.y = 1.0 - v_texCoord.y;
+    }
+    gl_Position = u_modelViewProjMatrix * a_position;
   }
   </script>
   <script id="fshader" type="x-shader/x-fragment">
@@ -46,21 +46,22 @@
   varying vec2 v_texCoord;
 
   #define M_PI 3.1415926535897932384626433832795
+  #define M_E  2.7182818284590452353602874713527
 
   // Some simple random noise generator.
   float rand(vec2 tc) {
-  return fract(sin(dot(tc.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    return fract(sin(dot(tc.xy, vec2(12.9898, 78.233))) * 43758.5453);
   }
 
   // Simple dithering. No temporal noise, spatial noise only.
   vec4 dither(vec4 c, vec2 tc) {
-  vec4 p = vec4(
-      rand(tc) - 0.5,
-      rand(tc + vec2(1.0, 0.0)) - 0.5,
-      rand(tc + vec2(0.0, 1.0)) - 0.5,
-      0.0
-      );
-  return clamp(c + p / 255.0, 0.0, 1.0);
+    vec4 p = vec4(
+        rand(tc) - 0.5,
+        rand(tc + vec2(1.0, 0.0)) - 0.5,
+        rand(tc + vec2(0.0, 1.0)) - 0.5,
+        0.0
+        );
+    return clamp(c + p / 255.0, 0.0, 1.0);
   }
 
   // coord2color encodes a coordinate as a color value. Length is encoded as
@@ -150,159 +151,177 @@
   // tc2coord converts a texcoord to a coordinate. Simply applies the view
   // rectangle.
   vec2 tc2coord(vec2 p) {
-  return p * u_xymin_xysize.zw + u_xymin_xysize.xy;
+    return p * u_xymin_xysize.zw + u_xymin_xysize.xy;
   }
 
   // coord2tc is the inverse map of tc2coord.
   vec2 coord2tc(vec2 p) {
-  return (p - u_xymin_xysize.xy) / u_xymin_xysize.zw;
-  // return mod((p - u_xymin_xysize.xy) / u_xymin_xysize.zw, vec2(1.0, 1.0));
+    return (p - u_xymin_xysize.xy) / u_xymin_xysize.zw;
+    // return mod((p - u_xymin_xysize.xy) / u_xymin_xysize.zw, vec2(1.0, 1.0));
   }
 
-  // cmul multiplies two complex values.
-  vec2 cmul(vec2 a, vec2 b) {
-  return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
-  }
+  // OPERATIONS START.
 
-  // cabs2 returns |a|^2
-  float cabs2(vec2 a) {
-  return dot(a, a);
-  }
+  // The unity so you can write 3*u+4*i in case you like it more.
+  const vec2 u = vec2(1.0, 0.0);
 
-  // cabs returns |a|
-  float cabs(vec2 a) {
-  return sqrt(dot(a, a));
-  }
+  // The imaginary unit for mathematicians.
+  const vec2 i = vec2(0.0, 1.0);
+
+  // The imaginary unit for physicists.
+  const vec2 j = vec2(0.0, 1.0);
 
   // x*conj returns x~
   const vec2 conj = vec2(1.0, -1.0);
 
+  // cabs returns |a|
+  float cabs(vec2 a) {
+    return sqrt(dot(a, a));
+  }
+
+  // cabs2 returns |a|^2
+  float cabs2(vec2 a) {
+    return dot(a, a);
+  }
+
+  // carg returns arg a
+  float carg(vec2 a) {
+    return atan(a.y, a.x);
+  }
+
+  // cmul multiplies two complex values.
+  vec2 cmul(vec2 a, vec2 b) {
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+  }
+
   // cdiv divides two complex values.
   vec2 cdiv(vec2 a, vec2 b) {
-  return cmul(a, b*conj) / cabs2(b);
+    return cmul(a, b*conj) / cabs2(b);
   }
 
   // cexp does what you think it does.
   vec2 cexp(vec2 a) {
-  return exp(a.x) * vec2(cos(a.y), sin(a.y));
+    return exp(a.x) * vec2(cos(a.y), sin(a.y));
   }
 
   // clog does what you think it does.
   vec2 clog(vec2 a) {
-  return vec2(
-    log(cabs2(a)) * 0.5,
-    atan(a.y, a.x)
-  );
+    return vec2(
+      log(cabs2(a)) * 0.5,
+      atan(a.y, a.x)
+    );
   }
 
   // cpow does what you think it does.
   vec2 cpow(vec2 a, vec2 b) {
-  return cexp(cmul(clog(a), b));
+    return cexp(cmul(clog(a), b));
   }
 
   // csin does what you think it does.
   vec2 csin(vec2 a) {
-  return vec2(0.5, -0.5) * (cexp(vec2(-a.y, a.x)) - cexp(vec2(a.y, -a.x))).yx;
+    return vec2(0.5, -0.5) * (cexp(vec2(-a.y, a.x)) - cexp(vec2(a.y, -a.x))).yx;
   }
 
   // ccos does what you think it does.
   vec2 ccos(vec2 a) {
-  return vec2(0.5, 0.5) * (cexp(vec2(-a.y, a.x)) + cexp(vec2(a.y, -a.x)));
+    return vec2(0.5, 0.5) * (cexp(vec2(-a.y, a.x)) + cexp(vec2(a.y, -a.x)));
   }
 
   // ctan does what you think it does.
   vec2 ctan(vec2 a) {
-  return cdiv(csin(a), ccos(a));
+    return cdiv(csin(a), ccos(a));
   }
 
   // ccot does what you think it does.
   vec2 ccot(vec2 a) {
-  return cdiv(ccos(a), csin(a));
+    return cdiv(ccos(a), csin(a));
   }
+
+  // OPERATIONS END.
 
   // whirl applies the fractal iteration formula.
   vec2 whirl(vec2 z, vec2 c) {
-  if (!(length(z) < BAILOUT)) {
-    return z;
-  }
-  // return cmul(z, z) + c;
-  return FORMULA;
+    if (!(length(z) < BAILOUT)) {
+      return z;
+    }
+    // return cmul(z, z) + c;
+    return FORMULA;
   }
 
   vec2 whirln(vec2 z, vec2 c) {
-  for (int i = 0; i < N; ++i)
-    z = whirl(z, c);
-  return z;
+    for (int k = 0; k < N; ++k)
+      z = whirl(z, c);
+    return z;
   }
 
   // sample samples a pixel.
   vec4 sample(vec2 tc) {
-  if (tc.x < 0.0 || tc.y < 0.0 || tc.x > 1.0 || tc.y > 1.0) {
-    return vec4(99.0, 99.0, 99.0, 1.0);
-  }
-  return texture2D(u_sampler, tc);
+    if (tc.x < 0.0 || tc.y < 0.0 || tc.x > 1.0 || tc.y > 1.0) {
+      return vec4(99.0, 99.0, 99.0, 1.0);
+    }
+    return texture2D(u_sampler, tc);
   }
 
   // sample2coord samples a pixel and converts it to a coordinate.
   vec2 sample2coord(vec2 tc) {
   #ifdef USEFBO
-  return sample(tc).xy;
+    return sample(tc).xy;
   #else
-  return color2coord(sample(tc));
+    return color2coord(sample(tc));
   #endif
   }
 
   // sample2color samples a pixel and converts it to a color.
   vec4 sample2color(vec2 tc) {
   #ifdef USEFBO
-  return coord2color(sample(tc).xy);
+    return coord2color(sample(tc).xy);
   #else
-  return sample(tc);
+    return sample(tc);
   #endif
   }
 
   // main applies an iteration of the fractal.
   void main() {
-  if (u_blit2screen != 0) {
-    gl_FragColor = sample2color(v_texCoord);
-  } else {
-    vec2 zzc;
-    vec2 p = tc2coord(v_texCoord);
-    if (u_mode <= 0) {
-      // Mandelbrot.
-      vec2 z;
-      if (u_t == 0.0) {
-        z = u_param;
-      } else {
-        z = sample2coord(v_texCoord);
+    if (u_blit2screen != 0) {
+      gl_FragColor = sample2color(v_texCoord);
+    } else {
+      vec2 zzc;
+      vec2 p = tc2coord(v_texCoord);
+      if (u_mode <= 0) {
+        // Mandelbrot.
+        vec2 z;
+        if (u_t == 0.0) {
+          z = u_param;
+        } else {
+          z = sample2coord(v_texCoord);
+        }
+        zzc = whirln(z, p);
+      } else if (u_mode <= 1) {
+        // Julia. Iterate on each pixel.
+        vec2 z;
+        if (u_t == 0.0) {
+          z = tc2coord(v_texCoord);
+        } else {
+          z = sample2coord(v_texCoord);
+        }
+        zzc = whirln(z, u_param);
+      } else {  // if (u_mode <= 2)
+        // Julia. Iterate by deforming.
+        if (u_t == 0.0) {
+          zzc = whirln(p, u_param);
+        } else {
+          // zzc = sample2coord(coord2tc(whirln(p, u_param)));
+          // HACK: do not dither again!
+          gl_FragColor = sample(coord2tc(whirln(p, u_param)));
+          return;
+        }
       }
-      zzc = whirln(z, p);
-    } else if (u_mode <= 1) {
-      // Julia. Iterate on each pixel.
-      vec2 z;
-      if (u_t == 0.0) {
-        z = tc2coord(v_texCoord);
-      } else {
-        z = sample2coord(v_texCoord);
-      }
-      zzc = whirln(z, u_param);
-    } else {  // if (u_mode <= 2)
-      // Julia. Iterate by deforming.
-      if (u_t == 0.0) {
-        zzc = whirln(p, u_param);
-      } else {
-        // zzc = sample2coord(coord2tc(whirln(p, u_param)));
-        // HACK: do not dither again!
-        gl_FragColor = sample(coord2tc(whirln(p, u_param)));
-        return;
-      }
-    }
   #ifdef USEFBO
-    gl_FragColor = vec4(zzc, 0.0, 0.0);
+      gl_FragColor = vec4(zzc, 0.0, 0.0);
   #else
-    gl_FragColor = coord2color(zzc);
+      gl_FragColor = coord2color(zzc);
   #endif
-  }
+    }
   }
   </script>
   <script>
