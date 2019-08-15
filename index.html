@@ -256,9 +256,6 @@
 
   // sample samples a pixel.
   vec4 sample(vec2 tc) {
-    if (tc.x < 0.0 || tc.y < 0.0 || tc.x > 1.0 || tc.y > 1.0) {
-      return vec4(99.0, 99.0, 99.0, 1.0);
-    }
     return texture2D(u_sampler, tc);
   }
 
