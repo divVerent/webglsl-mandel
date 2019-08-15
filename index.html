@@ -270,6 +270,9 @@
 
   // sample2color samples a pixel and converts it to a color.
   vec4 sample2color(vec2 tc) {
+    if (tc.x < 0.0 || tc.y < 0.0 || tc.x > 1.0 || tc.y > 1.0) {
+      return vec4(0.735, 0.735, 0.735, 1.0);
+    }
   #ifdef USEFBO
     return coord2color(sample(tc).xy);
   #else
